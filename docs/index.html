@@ -168,13 +168,9 @@ turmas_iniciais &lt;- dados %&gt;%
   unique() %&gt;%
   sort()
 
-# Primeiro, converta sua imagem para base64
-# Você pode fazer isso uma vez e guardar o resultado
-
 ui &lt;- page_sidebar(
   title = tags$div(
     style = "display: flex; align-items: center; gap: 10px;",
-    tags$img(src = "imagens/esa.png", height = "30px"),
     "Resultados Escolares - 2024/25 - 1.º Semestre"
   ),
   theme = bs_theme(preset = "default"),
@@ -188,10 +184,10 @@ ui &lt;- page_sidebar(
     selectInput("disciplina", "Disciplina",
                 choices = disciplinas_iniciais,
                 selected = disciplinas_iniciais[1]),
-    selectInput("turma", "Turma", 
-            choices = turmas_iniciais,
-            selected = turmas_iniciais[1], # Change this line: select only first turma by default
-            multiple = FALSE)
+    selectInput("turma", "Turma/Grupo de Turmas", 
+                choices = turmas_iniciais,
+                selected = turmas_iniciais[1],
+                multiple = TRUE)
   ),
   
   layout_columns(
@@ -203,13 +199,15 @@ ui &lt;- page_sidebar(
       theme = "primary"
     ),
     value_box(
-      title = "Número de Notas do Ano na Disciplina",
+      title = "Número de Notas",
       value = textOutput("n_notas"),
+      p(textOutput("n_notas_grupo")),
       theme = "secondary"
     ),
     value_box(
-      title = "% Notas Positivas do Ano na Disciplina",
+      title = "% Notas Positivas",
       value = textOutput("perc_positivas"),
+      p(textOutput("perc_positivas_grupo")),
       theme = "success"
     )
   ),
@@ -219,7 +217,7 @@ ui &lt;- page_sidebar(
     heights_equal = "row",
     card(
       full_screen = TRUE,
-      card_header("Disciplina na Turma Vs. Disciplina no Ano"),
+      card_header("Grupo Selecionado Vs. Ano"),
       plotlyOutput("box_comparison")
     ),
     card(
@@ -229,7 +227,7 @@ ui &lt;- page_sidebar(
     ),
     card(
       full_screen = TRUE,
-      card_header("Classificações da Turma"),
+      card_header("Classificações do Grupo"),
       plotlyOutput("histogram_plot")
     )
   )
@@ -252,22 +250,22 @@ server &lt;- function(input, output, session) {
   
   # Update turmas based on ano and disciplina
   observe({
-  req(input$ano, input$disciplina)
-  turmas_disponiveis &lt;- dados %&gt;%
-    filter(Ano == input$ano,
-           Disciplina == input$disciplina) %&gt;%
-    pull(Turma) %&gt;%
-    unique() %&gt;%
-    sort()
+    req(input$ano, input$disciplina)
+    turmas_disponiveis &lt;- dados %&gt;%
+      filter(Ano == input$ano,
+             Disciplina == input$disciplina) %&gt;%
+      pull(Turma) %&gt;%
+      unique() %&gt;%
+      sort()
     
     current_selected &lt;- input$turma
-  new_selected &lt;- intersect(current_selected, turmas_disponiveis)
-  if (length(new_selected) == 0) new_selected &lt;- turmas_disponiveis[1]
-  
-  updateSelectInput(session, "turma",
-                   choices = turmas_disponiveis,
-                   selected = new_selected)
-})
+    new_selected &lt;- intersect(current_selected, turmas_disponiveis)
+    if (length(new_selected) == 0) new_selected &lt;- turmas_disponiveis[1]
+    
+    updateSelectInput(session, "turma",
+                     choices = turmas_disponiveis,
+                     selected = new_selected)
+  })
   
   dados_ano_disc &lt;- reactive({
     req(dados, input$ano, input$disciplina)
@@ -296,21 +294,33 @@ server &lt;- function(input, output, session) {
   
   output$n_notas &lt;- renderText({
     df &lt;- dados_ano_disc()
-    nrow(df)
+    paste0("Ano: ", nrow(df))
+  })
+
+  output$n_notas_grupo &lt;- renderText({
+    df &lt;- dados_filtrados()
+    paste0("Grupo: ", nrow(df))
   })
   
   output$perc_positivas &lt;- renderText({
     df &lt;- dados_ano_disc()
     if (nrow(df) &gt; 0) {
-      paste0(round(mean(df$Notas &gt;= 10, na.rm = TRUE) * 100, 1), "%")
+      paste0("Ano: ", round(mean(df$Notas &gt;= 10, na.rm = TRUE) * 100, 1), "%")
+    } else "N/A"
+  })
+  
+  output$perc_positivas_grupo &lt;- renderText({
+    df &lt;- dados_filtrados()
+    if (nrow(df) &gt; 0) {
+      paste0("Grupo: ", round(mean(df$Notas &gt;= 10, na.rm = TRUE) * 100, 1), "%")
     } else "N/A"
   })
   
   output$box_comparison &lt;- renderPlotly({
     req(input$ano, input$disciplina, length(input$turma) &gt; 0)
     
-    # Dados da turma na disciplina
-    dados_turma &lt;- dados_filtrados()
+    # Dados do grupo na disciplina
+    dados_grupo &lt;- dados_filtrados()
     
     # Dados do ano na disciplina
     dados_ano &lt;- dados %&gt;%
@@ -319,10 +329,10 @@ server &lt;- function(input, output, session) {
     
     # Combinar os dados para o plot
     dados_plot &lt;- bind_rows(
-      mutate(dados_turma, Grupo = "Turma"),
+      mutate(dados_grupo, Grupo = "Grupo"),
       mutate(dados_ano, Grupo = "Ano")
     ) %&gt;%
-      mutate(Grupo = factor(Grupo, levels = c("Ano", "Turma")))
+      mutate(Grupo = factor(Grupo, levels = c("Ano", "Grupo")))
     
     # Criar o plot diretamente com plotly
     plot_ly(dados_plot, y = ~Grupo, x = ~Notas, type = "box",
@@ -339,17 +349,18 @@ server &lt;- function(input, output, session) {
   output$metrics_table &lt;- render_gt({
     req(nrow(dados_filtrados()) &gt; 0, input$ano, input$disciplina, length(input$turma) &gt; 0)
     
+    # Métricas para o ano e grupo selecionado
     media_ano_disciplina &lt;- dados %&gt;%
       filter(Ano == input$ano,
              Disciplina == input$disciplina) %&gt;%
       summarise(media = mean(Notas, na.rm = TRUE)) %&gt;%
       pull(media)
     
-    media_turma_disciplina &lt;- dados_filtrados() %&gt;%
+    media_grupo_disciplina &lt;- dados_filtrados() %&gt;%
       summarise(media = mean(Notas, na.rm = TRUE)) %&gt;%
       pull(media)
     
-    media_turma_geral &lt;- dados %&gt;%
+    media_grupo_geral &lt;- dados %&gt;%
       filter(Ano == input$ano,
              Turma %in% input$turma) %&gt;%
       summarise(media = mean(Notas, na.rm = TRUE)) %&gt;%
@@ -360,29 +371,30 @@ server &lt;- function(input, output, session) {
       summarise(media = mean(Notas, na.rm = TRUE)) %&gt;%
       pull(media)
     
-    desvio_disciplina_ano &lt;- media_turma_disciplina - media_ano_disciplina
-    desvio_relativo_turma &lt;- desvio_disciplina_ano - (media_turma_geral - media_geral_ano)
+    desvio_disciplina_ano &lt;- media_grupo_disciplina - media_ano_disciplina
+    desvio_relativo_grupo &lt;- desvio_disciplina_ano - (media_grupo_geral - media_geral_ano)
     
+    # Criar tabela de métricas
     metricas &lt;- data.frame(
       Métrica = c(
-        "Média da Turma na Disciplina",
+        "Média do Grupo na Disciplina",
         "Média do Ano na Disciplina",
-        "Média Geral da Turma",
+        "Média Geral do Grupo",
         "Média Geral do Ano",
         "Desvio para Média do Ano",
-        "Desvio Relativo à Turma"
+        "Desvio Relativo ao Grupo"
       ),
       Valor = c(
-        round(media_turma_disciplina, 2),
+        round(media_grupo_disciplina, 2),
         round(media_ano_disciplina, 2),
-        round(media_turma_geral, 2),
+        round(media_grupo_geral, 2),
         round(media_geral_ano, 2),
         round(desvio_disciplina_ano, 2),
-        round(desvio_relativo_turma, 2)
+        round(desvio_relativo_grupo, 2)
       )
     )
     
-    gt(metricas) %&gt;%
+        gt(metricas) %&gt;%
       tab_header(
         title = md(paste("Métricas para", input$disciplina))
       ) %&gt;%
@@ -397,7 +409,7 @@ server &lt;- function(input, output, session) {
         ),
         locations = cells_body(
           columns = "Valor",
-          rows = Valor &gt; 0 &amp; (Métrica %in% c("Desvio para Média do Ano", "Desvio Relativo à Turma"))
+          rows = Valor &gt; 0 &amp; (Métrica %in% c("Desvio para Média do Ano", "Desvio Relativo ao Grupo"))
         )
       ) %&gt;%
       tab_style(
@@ -407,7 +419,7 @@ server &lt;- function(input, output, session) {
         ),
         locations = cells_body(
           columns = "Valor",
-          rows = Valor &lt; 0 &amp; (Métrica %in% c("Desvio para Média do Ano", "Desvio Relativo à Turma"))
+          rows = Valor &lt; 0 &amp; (Métrica %in% c("Desvio para Média do Ano", "Desvio Relativo ao Grupo"))
         )
       ) %&gt;%
       cols_align(
@@ -427,10 +439,7 @@ server &lt;- function(input, output, session) {
   output$histogram_plot &lt;- renderPlotly({
     req(input$ano, input$disciplina, input$turma)
     
-    dados_plot &lt;- dados %&gt;%
-      filter(Ano == input$ano,
-             Disciplina == input$disciplina,
-             Turma %in% input$turma)
+    dados_plot &lt;- dados_filtrados()
     
     plot_ly(dados_plot, x = ~Notas, type = "histogram",
             nbinsx = 20,
